@@ -1,0 +1,98 @@
+# Company custom Semgrep rules for Dockerfiles.
+# These fill gaps not covered by the Semgrep community Dockerfile rules.
+# Severity convention used by the Jenkins stage:
+#   ERROR   = 🔴 Fail
+#   WARNING = 🟠 Must fix
+#   INFO    = 🟡 Advisory
+
+rules:
+
+  - id: dockerfile-secret-in-env
+    languages: [dockerfile]
+    severity: ERROR
+    message: >-
+      A secret-looking value is hardcoded in ENV. It is stored in the image and visible
+      with 'docker history' / 'docker inspect'. Pass secrets at runtime
+      (Secrets Manager / Jenkins credentials) or use BuildKit '--mount=type=secret'.
+    pattern-regex: |-
+      (?im)^\s*ENV\s+[A-Z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIAL)[A-Z0-9_]*(\s*=\s*|\s+)["']?[^\s"'$][^\s"']*
+    metadata:
+      category: security
+      our-rule: "Secret or password in ENV / ARG"
+
+  - id: dockerfile-secret-in-arg
+    languages: [dockerfile]
+    severity: ERROR
+    message: >-
+      A secret-looking build argument is used. Build args are saved in the image
+      history. Use BuildKit secrets instead: RUN --mount=type=secret,id=...
+    pattern-regex: |-
+      (?im)^\s*ARG\s+[A-Z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIAL)[A-Z0-9_]*\b
+    metadata:
+      category: security
+      our-rule: "Secret or password in ENV / ARG"
+
+  - id: dockerfile-untrusted-base-image
+    languages: [dockerfile]
+    severity: WARNING
+    message: >-
+      Base image is not from an approved source. Allowed: Docker official images
+      (e.g. python, node, nginx), public.ecr.aws/docker/library, your own ECR,
+      or gcr.io/distroless. Edit this rule to match your approved list.
+    patterns:
+      - pattern-regex: |-
+          (?im)^\s*FROM\s+(--platform=\S+\s+)?\S+.*$
+      # Approved: Docker official images (no namespace), stage aliases, scratch
+      - pattern-not-regex: |-
+          (?im)^\s*FROM\s+(--platform=\S+\s+)?[a-z0-9._-]+(:[^\s@/]+)?(@sha256:[a-f0-9]{64})?(\s+as\s+\S+)?\s*$
+      # Approved registries
+      - pattern-not-regex: |-
+          (?im)^\s*FROM\s+(--platform=\S+\s+)?(public\.ecr\.aws/docker/library/|[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/|gcr\.io/distroless/)\S+(\s+as\s+\S+)?\s*$
+    metadata:
+      category: security
+      our-rule: "Base image not from a trusted, maintained source"
+
+  - id: dockerfile-expose-ssh-port
+    languages: [dockerfile]
+    severity: WARNING
+    message: Port 22 (SSH) is exposed. Containers should not run SSH servers; use 'docker exec' instead.
+    pattern-regex: |-
+      (?im)^\s*EXPOSE\s+([0-9/a-z]+\s+)*22(/tcp)?(\s|$)
+    metadata:
+      category: security
+      our-rule: "Port 22 (SSH) exposed"
+
+  - id: dockerfile-curl-pipe-shell
+    languages: [dockerfile]
+    severity: WARNING
+    message: >-
+      Downloading a script and piping it straight into a shell runs unverified code.
+      Download it, verify the checksum, then run it.
+    pattern-regex: |-
+      (?i)\b(curl|wget)\b[^|;&\n]*\|\s*(sudo\s+)?(ba|z|da)?sh\b
+    metadata:
+      category: security
+      our-rule: "Pipe to shell"
+
+  - id: dockerfile-sudo-installed-or-used
+    languages: [dockerfile]
+    severity: WARNING
+    message: sudo is installed or used in the image. Run root steps before the USER line instead.
+    pattern-regex: |-
+      (?im)^\s*RUN\s+.*\bsudo\b
+    metadata:
+      category: security
+      our-rule: "sudo used in RUN"
+
+  - id: dockerfile-missing-healthcheck
+    languages: [dockerfile]
+    severity: INFO
+    message: No HEALTHCHECK instruction. Add one so Docker can detect an unhealthy container.
+    patterns:
+      - pattern-regex: |-
+          (?is)\A.*\z
+      - pattern-not-regex: |-
+          (?im)^\s*HEALTHCHECK\s+
+    metadata:
+      category: best-practice
+      our-rule: "No HEALTHCHECK"

@@ -1,0 +1,68 @@
+# gitleaks configuration (POC)
+# Keeps all ~150+ built-in rules and adds company-specific ones.
+# Place this file in the repo root as .gitleaks.toml
+# Requires gitleaks v8.25.0+ (uses [[allowlists]] syntax).
+
+title = "Company gitleaks config"
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------
+# Custom rules
+# ---------------------------------------------------------------
+
+# Database connection strings that contain a password
+[[rules]]
+id = "db-url-with-password"
+description = "Database URL with embedded password"
+regex = '''(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|amqp|mssql)://[^:\s/@]+:([^@\s/]+)@'''
+secretGroup = 1
+keywords = ["postgres", "mysql", "mariadb", "mongodb", "redis", "amqp", "mssql"]
+
+# JDBC URLs with a password parameter
+[[rules]]
+id = "jdbc-url-with-password"
+description = "JDBC URL with password parameter"
+regex = '''(?i)jdbc:[a-z]+://[^\s'"]*[?;&]password=([^&;\s'"]+)'''
+secretGroup = 1
+keywords = ["jdbc"]
+
+# Secret files committed (path-only rules: flagged just for existing)
+[[rules]]
+id = "env-file-committed"
+description = ".env file committed"
+path = '''(^|/)\.env(\.(local|dev|development|stage|staging|prod|production))?$'''
+
+[[rules]]
+id = "private-key-file-committed"
+description = "Private key file committed"
+path = '''(?i)((^|/)id_(rsa|dsa|ecdsa|ed25519)$|\.(pem|key|p12|pfx|jks)$)'''
+
+[[rules]]
+id = "credentials-file-committed"
+description = "Credentials file committed"
+path = '''(?i)(^|/)(credentials\.json|service-account.*\.json|\.npmrc|\.pypirc)$'''
+
+# Company-specific token (example: Redmine API key = 40 hex chars)
+[[rules]]
+id = "redmine-api-key"
+description = "Redmine API key"
+regex = '''(?i)redmine[\w.-]{0,20}(?:api[_-]?)?key\s*[:=]\s*['"]?([a-f0-9]{40})\b'''
+secretGroup = 1
+keywords = ["redmine"]
+
+# ---------------------------------------------------------------
+# Global allowlist (reduce false positives)
+# ---------------------------------------------------------------
+[[allowlists]]
+description = "Test folders, lockfiles and template files"
+paths = [
+  '''(^|/)(test|tests|__tests__|fixtures|testdata)/''',
+  '''(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|Pipfile\.lock)$''',
+  '''(^|/)\.env\.(example|sample|template)$''',
+]
+
+[[allowlists]]
+description = "Obvious placeholder values"
+stopwords = ["changeme", "dummy", "placeholder", "your_password_here", "xxxxxxxx"]

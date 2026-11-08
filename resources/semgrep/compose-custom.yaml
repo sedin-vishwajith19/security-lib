@@ -1,0 +1,275 @@
+# Company custom Semgrep rules for Docker Compose files.
+#
+# Why custom: the Semgrep community compose rules only match files that still have
+# the old top-level 'version:' key. Modern Compose files don't have it, so the
+# community rules silently miss them (verified in the POC).
+#
+# Severity convention used by the Jenkins stage:
+#   ERROR   = 🔴 Fail
+#   WARNING = 🟠 Must fix
+#   INFO    = 🟡 Advisory
+#
+# Exception for one line: add a comment  "# nosemgrep: <rule-id>" with the reason next to it.
+
+rules:
+
+  # ======================= 🔴 Fail =======================
+
+  - id: compose-privileged
+    languages: [yaml]
+    severity: ERROR
+    message: "Service '$SERVICE' runs privileged. This gives the container root-level access to the host."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              privileged: $V
+      - metavariable-regex: { metavariable: $V, regex: '^(true|"true"|yes)$' }
+      - focus-metavariable: $V
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: security, our-rule: "privileged: true" }
+
+  - id: compose-docker-socket
+    languages: [yaml]
+    severity: ERROR
+    message: "Service '$SERVICE' mounts the Docker socket. Anyone in this container can control Docker on the host (effectively root)."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              volumes: [..., $X, ...]
+      - metavariable-regex: { metavariable: $X, regex: '^["'']?/var/run/docker\.sock:' }
+      - focus-metavariable: $X
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: security, our-rule: "Docker socket mounted" }
+
+  - id: compose-secret-in-environment-list
+    languages: [yaml]
+    severity: ERROR
+    message: "Service '$SERVICE' has a hardcoded secret in 'environment:'. Use env_file created at deploy time, Docker secrets, or a ${VARIABLE} reference."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              environment: [..., $X, ...]
+      - metavariable-regex:
+          metavariable: $X
+          regex: '(?i)^["'']?[A-Z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY)[A-Z0-9_]*=[^$\s].*'
+      - focus-metavariable: $X
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: security, our-rule: "Passwords or secrets in environment" }
+
+  - id: compose-secret-in-environment-map
+    languages: [yaml]
+    severity: ERROR
+    message: "Service '$SERVICE' has a hardcoded secret in 'environment:' ($K). Use env_file created at deploy time, Docker secrets, or a ${VARIABLE} reference."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              environment:
+                ...
+                $K: $V
+      - metavariable-regex: { metavariable: $K, regex: '(?i)^[A-Z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY)[A-Z0-9_]*$' }
+      - metavariable-regex: { metavariable: $K, regex: '(?i)^(?!.*_FILE$)' }   # *_FILE points to a secret file: allowed
+      - metavariable-regex: { metavariable: $V, regex: '^[^$]' }               # ${VAR} references: allowed
+      - focus-metavariable: $V
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: security, our-rule: "Passwords or secrets in environment" }
+
+  # ======================= 🟠 Must fix =======================
+
+  - id: compose-host-namespace
+    languages: [yaml]
+    severity: WARNING
+    message: "Service '$SERVICE' shares a host namespace ($KEY: host). This breaks isolation between the container and the server."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              $KEY: host
+      - metavariable-regex: { metavariable: $KEY, regex: '^(network_mode|pid|ipc|userns_mode|uts)$' }
+      - focus-metavariable: $KEY
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: security, our-rule: "Host network / PID / IPC sharing" }
+
+  - id: compose-security-opt-unconfined
+    languages: [yaml]
+    severity: WARNING
+    message: "Service '$SERVICE' disables a kernel security layer ($X). This makes container escape much easier."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              security_opt: [..., $X, ...]
+      - metavariable-regex: { metavariable: $X, regex: '^["'']?(seccomp|apparmor)[:=]unconfined' }
+      - focus-metavariable: $X
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: security, our-rule: "Security protections disabled" }
+
+  - id: compose-sensitive-host-mount
+    languages: [yaml]
+    severity: WARNING
+    message: "Service '$SERVICE' mounts a sensitive host folder ($X). A compromised container could read or change host system files."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              volumes: [..., $X, ...]
+      - metavariable-regex: { metavariable: $X, regex: '^["'']?(/|/etc|/root|/proc|/sys|/boot|/var/run|/var/lib/docker|/home)(/[^:]*)?:' }
+      - metavariable-regex: { metavariable: $X, regex: '^["'']?(?!/var/run/docker\.sock:)' }   # covered by compose-docker-socket
+      - focus-metavariable: $X
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: security, our-rule: "Sensitive host folders mounted" }
+
+  - id: compose-cap-add
+    languages: [yaml]
+    severity: WARNING
+    message: "Service '$SERVICE' adds Linux capabilities. Keep only what is required and document approved exceptions with '# nosemgrep: compose-cap-add'."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              cap_add: $CAPS
+      - focus-metavariable: $CAPS
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: security, our-rule: "Extra capabilities added (cap_add)" }
+
+  - id: compose-missing-cap-drop-all
+    languages: [yaml]
+    severity: WARNING
+    message: "Service '$SERVICE' does not drop all capabilities. Add 'cap_drop: [ALL]' and add back only what is needed."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE: $BODY
+      - pattern-not: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              cap_drop: [..., ALL, ...]
+      - focus-metavariable: $SERVICE
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: security, our-rule: "No cap_drop: [ALL]" }
+
+  - id: compose-db-port-on-all-interfaces
+    languages: [yaml]
+    severity: WARNING
+    message: "Service '$SERVICE' publishes a database/cache port on all network interfaces ($P). Bind it to 127.0.0.1 or don't publish it."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              ports: [..., $P, ...]
+      - metavariable-regex: { metavariable: $P, regex: '^["'']?(0\.0\.0\.0:)?(3306|5432|6379|27017|9200|11211|5672|1433|1521)(:\d+)?["'']?$' }
+      - focus-metavariable: $P
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: security, our-rule: "Ports exposed on all interfaces" }
+
+  # ======================= 🟡 Advisory =======================
+
+  - id: compose-not-read-only
+    languages: [yaml]
+    severity: INFO
+    message: "Service '$SERVICE' has a writable root filesystem. Consider 'read_only: true'."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE: $BODY
+      - pattern-not: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              read_only: true
+      - focus-metavariable: $SERVICE
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: best-practice, our-rule: "No read_only filesystem" }
+
+  - id: compose-no-resource-limits
+    languages: [yaml]
+    severity: INFO
+    message: "Service '$SERVICE' has no CPU/memory limits. One container could starve the others."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE: $BODY
+      - pattern-not: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              deploy:
+                ...
+                resources:
+                  ...
+                  limits: $L
+      - pattern-not: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              mem_limit: $M
+      - focus-metavariable: $SERVICE
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: best-practice, our-rule: "No CPU / memory limits" }
+
+  - id: compose-no-healthcheck
+    languages: [yaml]
+    severity: INFO
+    message: "Service '$SERVICE' has no healthcheck."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE: $BODY
+      - pattern-not: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              healthcheck: $H
+      - focus-metavariable: $SERVICE
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: best-practice, our-rule: "No healthcheck" }
+
+  - id: compose-no-restart-policy
+    languages: [yaml]
+    severity: INFO
+    message: "Service '$SERVICE' has no restart policy."
+    patterns:
+      - pattern: |
+          services:
+            ...
+            $SERVICE: $BODY
+      - pattern-not: |
+          services:
+            ...
+            $SERVICE:
+              ...
+              restart: $R
+      - focus-metavariable: $SERVICE
+    paths: { include: ["*compose*.yml", "*compose*.yaml"] }
+    metadata: { category: best-practice, our-rule: "No restart policy" }
